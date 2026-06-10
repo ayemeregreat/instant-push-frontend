@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Instant Push PWA</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📢</text></svg>">
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 24px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    button {
+      background: #0070f3;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      border: 1px solid #ddd;
+      border-radius: 16px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    .status {
+      font-size: 14px;
+      color: #555;
+      margin-top: 10px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      right: 20px;
+      background: #333;
+      color: white;
+      padding: 12px;
+      border-radius: 40px;
+      text-align: center;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>📢 Instant Push PWA</h2>
+    <p>Install this app on your home screen to get real‑time notifications when someone posts.</p>
+    <button id="notifyBtn">🔔 Enable Notifications</button>
+    <div id="subStatus" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3>✏️ Create a post</h3>
+    <input type="text" id="postTitle" placeholder="Title (optional)" value="Someone just posted!">
+    <textarea id="postBody" rows="3" placeholder="Message...">Hello from Instant Push!</textarea>
+    <button id="postBtn" disabled>📤 Send to all subscribers</button>
+    <div id="postResult" class="status"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    // Configuration – CHANGE THIS TO YOUR BACKEND URL
+    const BACKEND_URL = 'ayemeregreat-instant-push-backend.vercel.app'; // 👈 Replace with your actual Vercel backend URL
+
+    let swRegistration = null;
+    let isSubscribed = false;
+
+    // Helper to show a temporary message
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.style.opacity = '1';
+      setTimeout(() => { toast.style.opacity = '0'; }, 3000);
+    }
+
+    // Update UI based on subscription status
+    function updateUI() {
+      const postBtn = document.getElementById('postBtn');
+      const notifyBtn = document.getElementById('notifyBtn');
+      const subStatus = document.getElementById('subStatus');
+      if (isSubscribed) {
+        notifyBtn.disabled = true;
+        notifyBtn.textContent = '✅ Notifications enabled';
+        postBtn.disabled = false;
+        subStatus.textContent = 'You are subscribed. Posts will trigger notifications instantly.';
+      } else {
+        notifyBtn.disabled = false;
+        notifyBtn.textContent = '🔔 Enable Notifications';
+        postBtn.disabled = true;
+        subStatus.textContent = 'Click above to allow notifications and get instant alerts.';
+      }
+    }
+
+    // Subscribe the user (ask permission, then send subscription to backend)
+    async function subscribeUser() {
+      if (!swRegistration) {
+        showToast('Service worker not ready. Please reload.');
+        return;
+      }
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          showToast('Notification permission denied.');
+          return;
+        }
+        // Get VAPID public key from your environment (we'll hardcode it here from Firebase)
+        const applicationServerKey = urlBase64ToUint8Array('BEE1gb3iuw0ojSgXMJ6KVd5WZ63F7K6ij9xgwsyLwCORzRBstR56Z5bmc2hT1_gvDHbSCPRwP9IqV0DanaW_Rys');
+        const subscription = await swRegistration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey
+        });
+        // Send subscription to backend
+        const response = await fetch(`${BACKEND_URL}/api/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(subscription)
+        });
+        if (response.ok) {
+          isSubscribed = true;
+          localStorage.setItem('pushSubscribed', 'true');
+          updateUI();
+          showToast('Subscribed! You will now receive notifications.');
+        } else {
+          throw new Error('Backend save failed');
+        }
+      } catch (err) {
+        console.error(err);
+        showToast('Subscription failed: ' + err.message);
+      }
+    }
+
+    // Check existing subscription on load
+    async function checkSubscription() {
+      if (!swRegistration) return;
+      const subscription = await swRegistration.pushManager.getSubscription();
+      isSubscribed = !!subscription;
+      localStorage.setItem('pushSubscribed', isSubscribed ? 'true' : 'false');
+      updateUI();
+    }
+
+    // Send a post to the backend, which triggers pushes
+    async function sendPost() {
+      const title = document.getElementById('postTitle').value.trim() || 'New post';
+      const body = document.getElementById('postBody').value.trim();
+      if (!body) {
+        showToast('Please enter a message.');
+        return;
+      }
+      const postBtn = document.getElementById('postBtn');
+      postBtn.disabled = true;
+      postBtn.textContent = 'Sending...';
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/post`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, body, url: '/' })
+        });
+        const data = await response.json();
+        if (response.ok) {
+          showToast(`Posted! Notified ${data.count || 0} subscribers.`);
+          document.getElementById('postBody').value = '';
+        } else {
+          showToast('Error: ' + (data.error || 'Unknown'));
+        }
+      } catch (err) {
+        showToast('Network error: ' + err.message);
+      } finally {
+        postBtn.disabled = !isSubscribed;
+        postBtn.textContent = '📤 Send to all subscribers';
+      }
+    }
+
+    // Helper: convert base64 VAPID key to Uint8Array
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray;
+    }
+
+    // Register service worker
+    async function init() {
+      if ('serviceWorker' in navigator && 'PushManager' in window) {
+        try {
+          swRegistration = await navigator.serviceWorker.register('/sw.js');
+          console.log('Service worker registered');
+          await checkSubscription();
+        } catch (err) {
+          console.error('SW registration failed:', err);
+          showToast('Service worker registration failed. Notifications unavailable.');
+        }
+      } else {
+        showToast('Push notifications not supported in this browser.');
+      }
+      // Attach event listeners
+      document.getElementById('notifyBtn').addEventListener('click', subscribeUser);
+      document.getElementById('postBtn').addEventListener('click', sendPost);
+    }
+
+    init();
+  </script>
+</body>
+</html>
